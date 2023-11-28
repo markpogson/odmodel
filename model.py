@@ -4,33 +4,31 @@ Created on Fri Jun  2 09:24:31 2023
 
 @author: mark.pogson@liverpool.ac.uk
 
-Modification of Baumann et al. (2020) model to include:
-    - exponential decay homophily
-    - damping factor
-    - agent-specific tendencies
-    - group-level constant tendencies and tendency functions
-The model can be made to match Baumann et al. (2020) by setting:
-    - homophily_method = 'sum'
-    - damping_root = 0
-    - constant_tendencies = [0]
-    - tendency_ng = 0
+Modification of Baumann et al. (2020) model to include distinct tendencies as:
+    - constant or time-dependent
+    - individual or group level
     
-Note that message_rates are a sum of activities and initial message_rates
-This means that when using activity groups, the first time point doesn't reflect this sum
-It's a tiny quirk of the method, and is simplest to leave in place
-
-It's now possible to specify agent ids when addint variant groups (e.g. apply variant to most active agents, or agents with largest initial opinion magnitudes, etc
-As well as tendency and activity, it's now possible to define groups for:
+Note that only tendency groups were used in the present study, but the code includes scope for:
+    - activity
     - controversy
     - homophily
     - sociality
     - reciprocity
     - n_receive
-In theory these could all change in response to messages received, like for activity, but not implemented this yet
-It wouldn't be much work to do this, but I don't think it's worth pursuing for now
+    
+See also:
+    - functions.py for the functions used in model.py
+    - postproc.py for postprocessing to aggregate and compare results
+    - postproc_functions.py for the functions used in postproc.py
+    
+The code includes some features not included/analysed in the present study, e.g. tension. These should be used with caution as they have not been tested/reviewed fully.
+    
+Note that code comments use PRL as a shorthand for Baumann et al. (2020)
+and PRL SM for its supplementary materials
 
-This version makes the model a function which can be run in parallel using joblib
-Parameter values for the simulations don't need adjusting before running each one
+This script outputs csv files to be analysed and plotted using postproc.py
+
+The csv outputs can also be used for independent analysis and plotting of results
 """
 
 import random
@@ -39,24 +37,38 @@ import functions
 from datetime import datetime
 from joblib import Parallel,delayed
 
-def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_value,controversy_value,constant_tendencies,tendency_ng,variant_tendency_kinds,variant_tendency_parameter_changes):
+'''
+define which simulations to run (see __main__)
+for baseline results:
+    lim0,lim1 = 0,2 or None,2 for consensus; 2,4 for radicalisation; 4,6 for polarisation; 6,9 or 6,None for minority group trials
+for sensitivity analysis:
+    lim0,lim1 = 0,3 or None,3 for consensus; 3,6 for radicalisation; 6,9 for polarisation; 9,14 or 9,None for minority group trials
+'''
+single_lim = None # enter single trial index to run, or None to specify range instead
+if single_lim!=None:
+    lim0 = single_lim
+    lim1 = lim0+1
+else:
+    lim0,lim1 = None,None # these must correspond to list indices in __main__
+SA = False # True to obtain results for sensitivity analysis (see __main__)
+minimal_outputs = True # True to limit number of output files and plots (SA has same effect anyway)
+ncore = -1 # -1 to use all cores, else specify number of cores available
+
+# model definition (see __main__ to set parameter values for repeated simulations)
+def run_model(rep,pre_root_folder,root_folder,n,nt,sociality_value,homophily_value,controversy_value,constant_tendencies,tendency_ng,variant_tendency_kinds,variant_tendency_parameter_changes):
     print(pre_root_folder,root_folder,'start')
     main_folder = 'results' # relative path
     # random seed
-    random_seed = 'randint' # None (i.e. unreproducibly random), 'randint' (useful for running multiple reps), or numerical value
+    random_seed = 'randint' # options: None (i.e. unreproducibly random), 'randint' (useful for running multiple reps), or numerical value (directly reproducible)
     if random_seed==None:
         random.seed()
     else:
         if random_seed=='randint':
-            random_seed = random.randint(0,99999) # i.e. generate random integer random seed for reprodicibility
+            random_seed = random.randint(0,99999) # i.e. generate random integer random seed for reprodicibility (where the numerical value can be used directly as the seed)
         random.seed(random_seed)
     
     # define model parameters --------------------------------------------------------------------------
-    damping_root = 0 # set as 0 to remove damping
-    sociality_value = 3 # K in paper
     reciprocity_probability = 0.5 # r in paper - probability of links being reciprocal
-    if homophily_method=='exp':
-        homophily_value*=10 # reflect difference in homophily forms
     n_receive = 10 # maximum number of agents to be influenced by at each iteration (m in PRL SM); this is made into an agent-specific list below
     atm = 1 # adjacency matrix time multiple, i.e. multiple of time step for updating adjacency matrix
     flip_rad = True # True to flip radicalisation so always positive (n.b. this will automatically be made False if variant tendency groups are present, since these will make radicalisation biased so not suitable to be flipped)
@@ -68,48 +80,48 @@ def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_va
     tendencies,tendency_kinds,tendency_parameters,agent_tendency_parameters,tendency_groups,starti_tendency = functions.group.add_variant_groups(constant_tendencies,tendency_ng,variant_tendency_kinds,variant_tendency_parameters,overwrite_ids=overwrite_ids,n=n)
     
     # define activity groups (i.e. activity above message rate)
-    constant_activities = [0]#[-0.5,0.5] # activities are shifts from baseline message_rates
-    activity_ng = 0#int(0.05*n) # number of agents in each variant group for activities
+    constant_activities = [0] # activities are shifts from baseline message_rates
+    activity_ng = 0 # number of agents in each variant group for activities
     variant_activity_kinds = ['spike']
     variant_activity_parameters = [dict(start=nt+1,amplitude=0,duration=200)] # note that start and constant will be defined for each agent (rather than at group level) when agent is excited
     overwrite_ids = [] # specify all the agent ids to include in the variant groups (as a flat list, first variant group first), or use an empty list to overwrite the last agents present
     activities,activity_kinds,activity_parameters,agent_activity_parameters,activity_groups,starti_activity = functions.group.add_variant_groups(constant_activities,activity_ng,variant_activity_kinds,variant_activity_parameters,overwrite_ids=overwrite_ids,n=n)
     
     # define controversy groups
-    constant_controversies = [controversy_value]#[-0.5,0.5]
-    controversy_ng = 0#int(0.05*n) # number of agents in each variant group for controversies
+    constant_controversies = [controversy_value]
+    controversy_ng = 0 # number of agents in each variant group for controversies
     variant_controversy_kinds = ['spike']
     variant_controversy_parameters = [dict(start=nt+1,amplitude=0,duration=200)] # note that start and constant will be defined for each agent (rather than at group level) when agent is excited
     overwrite_ids = [] # specify all the agent ids to include in the variant groups (as a flat list, first variant group first), or use an empty list to overwrite the last agents present 
     controversies,controversy_kinds,controversy_parameters,agent_controversy_parameters,controversy_groups,starti_controversy = functions.group.add_variant_groups(constant_controversies,controversy_ng,variant_controversy_kinds,variant_controversy_parameters,overwrite_ids=overwrite_ids,n=n)
     
     # define homophily groups
-    constant_homophilies = [homophily_value]#[-0.5,0.5]
-    homophily_ng = 0#int(0.05*n) # number of agents in each variant group for homophilies
+    constant_homophilies = [homophily_value]
+    homophily_ng = 0 # number of agents in each variant group for homophilies
     variant_homophily_kinds = ['spike']
     variant_homophily_parameters = [dict(start=nt+1,amplitude=0,duration=200)] # note that start and constant will be defined for each agent (rather than at group level) when agent is excited
     overwrite_ids = [] # specify all the agent ids to include in the variant groups (as a flat list, first variant group first), or use an empty list to overwrite the last agents present 
     homophilies,homophily_kinds,homophily_parameters,agent_homophily_parameters,homophily_groups,starti_homophily = functions.group.add_variant_groups(constant_homophilies,homophily_ng,variant_homophily_kinds,variant_homophily_parameters,overwrite_ids=overwrite_ids,n=n)
     
     # define sociality groups
-    constant_socialities = [sociality_value]#[-0.5,0.5]
-    sociality_ng = 0#int(0.05*n) # number of agents in each variant group for socialities
+    constant_socialities = [sociality_value]
+    sociality_ng = 0 # number of agents in each variant group for socialities
     variant_sociality_kinds = ['spike']
     variant_sociality_parameters = [dict(start=nt+1,amplitude=0,duration=200)] # note that start and constant will be defined for each agent (rather than at group level) when agent is excited
     overwrite_ids = [] # specify all the agent ids to include in the variant groups (as a flat list, first variant group first), or use an empty list to overwrite the last agents present 
     socialities,sociality_kinds,sociality_parameters,agent_sociality_parameters,sociality_groups,starti_sociality = functions.group.add_variant_groups(constant_socialities,sociality_ng,variant_sociality_kinds,variant_sociality_parameters,overwrite_ids=overwrite_ids,n=n)
     
     # define reciprocity groups
-    constant_reciprocities = [reciprocity_probability]#[-0.5,0.5]
-    reciprocity_ng = 0#int(0.05*n) # number of agents in each variant group for reciprocities
+    constant_reciprocities = [reciprocity_probability]
+    reciprocity_ng = 0 # number of agents in each variant group for reciprocities
     variant_reciprocity_kinds = ['spike']
     variant_reciprocity_parameters = [dict(start=nt+1,amplitude=0,duration=200)] # note that start and constant will be defined for each agent (rather than at group level) when agent is excited
     overwrite_ids = [] # specify all the agent ids to include in the variant groups (as a flat list, first variant group first), or use an empty list to overwrite the last agents present 
     reciprocities,reciprocity_kinds,reciprocity_parameters,agent_reciprocity_parameters,reciprocity_groups,starti_reciprocity = functions.group.add_variant_groups(constant_reciprocities,reciprocity_ng,variant_reciprocity_kinds,variant_reciprocity_parameters,overwrite_ids=overwrite_ids,n=n)
     
     # define n_receive groups
-    constant_n_receives = [n_receive]#[-0.5,0.5]
-    n_receive_ng = 0#int(0.05*n) # number of agents in each variant group for n_receives
+    constant_n_receives = [n_receive]
+    n_receive_ng = 0 # number of agents in each variant group for n_receives
     variant_n_receive_kinds = ['spike']
     variant_n_receive_parameters = [dict(start=nt+1,amplitude=0,duration=200)] # note that start and constant will be defined for each agent (rather than at group level) when agent is excited
     overwrite_ids = [] # specify all the agent ids to include in the variant groups (as a flat list, first variant group first), or use an empty list to overwrite the last agents present 
@@ -162,7 +174,7 @@ def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_va
     
     # homophily parameters (rarely/never used/altered)
     self_messaging = False # PRL paper reports self-messaging, but email from Baumann says otherwise (results seem OK either way)
-    min_dif = 0.01 # only used if homophily_method = 'sum', and only really matters if self_messaging is True
+    min_dif = 0.01 # only matters if self_messaging is True
     
     # define what counts as recent for connection analysis
     recent_time = int(0.9*nt)
@@ -178,14 +190,14 @@ def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_va
     folder_name = functions.file.make_folder(main_folder,pre_root_folder,root_folder,rep_folder)
     
     # write parameters to file
-    params = [random_seed,homophily_method,flip_rad,n,nt,time_step,atm,damping_root,activity_exponent,activity_base,activity_prox,activity_amp,self_messaging,min_dif,enemy_threshold,tension_balance,opinion_edges,message_rate_edges,set(tendencies),set(activities),set(controversies),set(homophilies),set(socialities),set(reciprocities),set(n_receives),
+    params = [random_seed,flip_rad,n,nt,time_step,atm,activity_exponent,activity_base,activity_prox,activity_amp,self_messaging,min_dif,enemy_threshold,tension_balance,opinion_edges,message_rate_edges,set(tendencies),set(activities),set(controversies),set(homophilies),set(socialities),set(reciprocities),set(n_receives),
               set(tendency_kinds),set(activity_kinds),set(controversy_kinds),set(homophily_kinds),set(sociality_kinds),set(reciprocity_kinds),set(n_receive_kinds),
               set([x.values() for x in tendency_parameters]),set([x.values() for x in activity_parameters]),set([x.values() for x in controversy_parameters]),set([x.values() for x in homophily_parameters]),set([x.values() for x in sociality_parameters]),set([x.values() for x in reciprocity_parameters]),set([x.values() for x in n_receive_parameters]),
               tendency_ng,activity_ng,controversy_ng,homophily_ng,sociality_ng,reciprocity_ng,n_receive_ng]
-    param_names = ['random_seed','homophily_method','flip_rad','n','nt','time_step','atm','damping_root','activity_exponent','activity_base','activity_prox','activity_amp','self_messaging','min_dif','enemy_threshold','tension_balance','opinion_edges','message_rate_edges','tendencies','activities','controversies','homophilies','socialities','reciprocities','n_receives',
+    param_names = ['random_seed','flip_rad','n','nt','time_step','atm','activity_exponent','activity_base','activity_prox','activity_amp','self_messaging','min_dif','enemy_threshold','tension_balance','opinion_edges','message_rate_edges','tendencies','activities','controversies','homophilies','socialities','reciprocities','n_receives',
                    'tendency_kinds','activity_kinds','controversy_kinds','homophily_kinds','sociality_kinds','reciprocity_kinds','n_receive_kinds','tendency_parameters','activity_parameters','controversy_parameters','homophily_parameters','sociality_parameters','reciprocity_parameters','n_receive_parameters','tendency_ng','activity_ng','controversy_ng','homophily_ng','sociality_ng','reciprocity_ng','n_receive_ng']
     functions.file.write_parameters(params,param_names,folder=folder_name)
-    full_params = dict(random_seed=random_seed,homophily_method=homophily_method,flip_rad=flip_rad,n=n,nt=nt,time_step=time_step,atm=atm,damping_root=damping_root,activity_exponent=activity_exponent,activity_base=activity_base,activity_prox=activity_prox,activity_amp=activity_amp,self_messaging=self_messaging,min_dif=min_dif,
+    full_params = dict(random_seed=random_seed,flip_rad=flip_rad,n=n,nt=nt,time_step=time_step,atm=atm,activity_exponent=activity_exponent,activity_base=activity_base,activity_prox=activity_prox,activity_amp=activity_amp,self_messaging=self_messaging,min_dif=min_dif,
                        enemy_threshold=enemy_threshold,tension_balance=tension_balance,opinion_edges=opinion_edges,message_rate_edges=message_rate_edges,
                        tendencies=tendencies,activities=activities,controversies=controversies,homophilies=homophilies,socialities=socialities,reciprocities=reciprocities,n_receives=n_receives,
                        starti_tendency=starti_tendency,starti_activity=starti_activity,starti_controversy=starti_controversy,starti_homophily=starti_homophily,starti_sociality=starti_sociality,starti_reciprocity=starti_reciprocity,starti_n_receive=starti_n_receive,
@@ -200,7 +212,7 @@ def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_va
                        tendency_ng=tendency_ng,activity_ng=activity_ng,controversy_ng=controversy_ng,homophily_ng=homophily_ng,sociality_ng=sociality_ng,reciprocity_ng=reciprocity_ng,n_receive_ng=n_receive_ng)
     functions.file.pickle_parameters(full_params,folder=folder_name)
     # --------------------------------------------------------------------------------------------------
-    print('homophily method =',homophily_method,', alpha =',controversy_value,', beta =',homophily_value,', n =',n)
+    print('alpha =',controversy_value,', beta =',homophily_value,', n =',n)
     adjacency_matrix = np.zeros([n,n]) # receivers (i) as rows, senders (j) as columns with probability of messaging from j to i based on homophily
     if kat:
         messaged_matrix = np.zeros([nt,n,n]) # effectively a store of the adjacency matrix at each time step (but either 1 or 0, not a probability or trust value, and it includes reciprocal messaging, which the adjacency matrix doesn't)
@@ -224,12 +236,9 @@ def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_va
         # update adjacency matrix
         if t==t_a:
             for i in random.sample(agent_ids,n):
-                if homophily_method=='sum': homophily_list,homophily_sum = functions.homophily.sum_homophily(i,opinions,agent_ids,homophilies,min_dif)
+                homophily_list,homophily_sum = functions.homophily.sum_homophily(i,opinions,agent_ids,homophilies,min_dif)
                 for j in random.sample(agent_ids,n):
-                    if homophily_method=='sum':
-                        prob_receive = functions.homophily.sum_probability(i,j,homophily_list,homophily_sum,self_messaging)
-                    elif homophily_method=='exp':
-                        prob_receive = functions.homophily.exp_probability(i,j,homophilies,opinions,self_messaging)
+                    prob_receive = functions.homophily.sum_probability(i,j,homophily_list,homophily_sum,self_messaging)
                     if prob_receive>=random.random(): # i.e. found a 'neighbour' for this iteration, so can receive message
                         adjacency_matrix[i,j] = prob_receive                                              
         # update opinion dynamics and message rates
@@ -241,7 +250,7 @@ def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_va
             # receive messages from agents j
             for j in random.sample(agent_ids,n):
                 if j in best_js and adjacency_matrix[i,j]>0 and message_rates[j]>=random.random():
-                    opinions[i] += functions.dynamics.social_shift(i,j,opinions,socialities,controversies,damping_root,time_step)
+                    opinions[i] += functions.dynamics.social_shift(i,j,opinions,socialities,controversies,time_step)
                     # record message being received
                     if kat:
                         messaged_matrix[t,i,j] += 1 # this is adding to count for current time step (i.e. from 0)
@@ -254,7 +263,7 @@ def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_va
                         message_rates,activities,agent_activity_parameters = functions.time.update_activity(i,t,message_rates,activities,activity_kinds,activity_parameters,agent_activity_parameters,activity_groups,activity_amp,trigger=True)
                 # send reciprocal message from i to j
                 if adjacency_matrix[i,j]*reciprocities[i]>=random.random() and message_rates[i]>=random.random(): # reciprocal i to j prob is j to i prob multiplied by recipocity prob of i
-                    opinions[j]+=functions.dynamics.social_shift(j,i,opinions,socialities,controversies,damping_root,time_step)
+                    opinions[j]+=functions.dynamics.social_shift(j,i,opinions,socialities,controversies,time_step)
                     # record message being received (no need to update adjacency matrix itself, as messaged_matrix is all that matters for later analysis
                     if kat:
                         messaged_matrix[t,j,i]+=1
@@ -304,149 +313,229 @@ def run_model(rep,pre_root_folder,root_folder,n,nt,homophily_method,homophily_va
         'Activity Group': activity_groups, # n.b. this is distinct from message_rate_group (it's group for activity above message rate, e.g. group for time variance)
         'Opinion Group': opinion_groups, # this is grouped by initial opinion
         'Message Rate Group': message_rate_groups, # this is grouped by initial message rate
-#        'Roughness': roughnesses # fractal dimension of each agent's opinion time-series
     }
-    matrix = recent_matrix # matrix to use in plotting connections (could alternatively use a slice of sent_matrix, or adajcency_matrix (which could be stored at each time step like sent_matrix)
+    #matrix = recent_matrix # matrix to use in plotting connections (could alternatively use a slice of sent_matrix, or adajcency_matrix (which could be stored at each time step like sent_matrix)
     opinion_autocorrelation = functions.analysis.get_autocorrelation(opinion_dynamics)
     rate_autocorrelation = functions.analysis.get_autocorrelation(rate_dynamics)
     
     # write final results to files
-    results = [opinion_dynamics,rate_dynamics,opinion_autocorrelation,rate_autocorrelation,tendency_dynamics,total_matrix,recent_matrix,properties,tensions_proximity,tensions_opinion_group,tensions_tendency_group,tensions_message_rate_group,tensions_activity_group]
-    descriptions = ['opinion_dynamics','rate_dynamics','opinion_autocorrelation','rate_autocorrelation','tendency_dynamics','total_matrix','recent_matrix','properties','tensions_proximity','tensions_opinion_group','tensions_tendency_group','tensions_message_rate_group','tensions_activity_group']
+    if SA or minimal_outputs: # keep output to minimum for SA, or if requested (only opinion_dynamics and properties are used in postproc.py for most possible analyses)
+        results = [opinion_dynamics,properties] # only really need properties for SA, but dynamics may also be useful
+        descriptions = ['opinion_dynamics','properties']
+    else:
+        results = [opinion_dynamics,rate_dynamics,opinion_autocorrelation,rate_autocorrelation,tendency_dynamics,total_matrix,recent_matrix,properties,tensions_proximity,tensions_opinion_group,tensions_tendency_group,tensions_message_rate_group,tensions_activity_group]
+        descriptions = ['opinion_dynamics','rate_dynamics','opinion_autocorrelation','rate_autocorrelation','tendency_dynamics','total_matrix','recent_matrix','properties','tensions_proximity','tensions_opinion_group','tensions_tendency_group','tensions_message_rate_group','tensions_activity_group']
     for result,description in zip(results,descriptions):
         functions.file.write_results(results=result, description=description, folder=folder_name)
     
     # plot dynamics
-    MAA = -1#np.argmax(rate_dynamics[0,:]) # -1 to avoid highlighting a particular agent, else give its index
-    for description in ['Message Rate','Sent Count','Received Count','Tendency','Tendency Group','Activity Group','Initial Opinion','Final Opinion']:#list(properties):
-        functions.plot.plot_dynamics(opinion_dynamics, properties, variable_name='Opinion', description=description, cmap='viridis', kinds=variant_tendency_kinds, parameters=variant_tendency_parameters, groups=tendency_groups, starti=starti_tendency, group_description='Tendency', group_cmap='crest', highlight_agent=MAA, spl=root_folder, folder=folder_name)
-        #functions.plot.plot_dynamics(rate_dynamics, properties, variable_name='message rate', description=description, cmap='viridis', kinds=variant_activity_kinds, parameters=variant_activity_parameters, groups=activity_groups, starti=starti_activity, group_description='Activity', group_cmap='rocket', highlight_agent=MAA, spl=root_folder, folder=folder_name)
-    
-    # plot social tension dynamics
-    #functions.plot.plot_timeseries(tss=[tensions_proximity,tensions_opinion_group,tensions_tendency_group,tensions_message_rate_group,tensions_activity_group], types=['proximity']+group_descriptions, description='social tension', title='enemy threshold = %.1f'%enemy_threshold, labels=['dyadic sum','%.3f'%tension_balance+' * triadic sum','Hamiltonian'], xlabel='time', folder=folder_name)
-    
-    '''
-    # commented out certain plots to save time
-    # plot autocorrelation for dynamics
-    for description in ['message rate','sent count','received count','tendency','tendency group','activity group','initial opinion','final opinion']:#list(properties):
-        functions.plot.plot_dynamics(opinion_autocorrelation, properties, autocorr=True, variable_name='opinion', description=description, cmap='viridis', kinds=variant_tendency_kinds, parameters=variant_tendency_parameters, groups=tendency_groups, starti=starti_tendency, group_description='tendency', group_cmap='crest', spl=root_folder, folder=folder_name)
-        functions.plot.plot_dynamics(rate_autocorrelation, properties, autocorr=True, variable_name='message rate', description=description, cmap='viridis', kinds=variant_activity_kinds, parameters=variant_activity_parameters, groups=activity_groups, starti=starti_activity, group_description='activity', group_cmap='rocket', spl=root_folder, folder=folder_name)
-    
-    functions.plot_dynamics_polarity(opinion_dynamics, yt=0, folder=folder_name) # there's a bug in this somewhere but it's rare and not that important anyway
-    
-    # plot distributions
-    # add hue to method, based on postproc_functions
-    for description in ['received count','final opinion','activity group','opinion group']:#list(properties):
-        functions.plot.plot_distribution(properties, description=description, folder=folder_name)
-    
-    # plot network diagrams
-    for description in ['received count', 'final opinion']:
-        functions.plot.plot_network(connection_matrix=matrix, node_values=properties, description=description, cmap='viridis', nticks=5, folder=folder_name)
-    
-    # plot heatmap of connection frequencies
-    functions.plot.plot_heatmap(matrix=matrix, description='sent count', xlabel='agent id (sender)', ylabel='agent id (receiver)', cmap='viridis', folder=folder_name)
-    
-    # plot property jointplot, including for neighour values
-    description='final opinion'
-    values = properties[description]
-    neighbour_values = functions.analysis.get_neighbour_values(connection_matrix=matrix, values=values)
-    functions.plot.plot_joint(values1=values, values2=neighbour_values, description1=description, description2='mean neighbour '+description, folder=folder_name)
-    description1 = 'final opinion'; description2 = 'sent count'
-    functions.plot.plot_joint(values1=properties[description1], values2=properties[description2], description1=description1, description2=description2, folder=folder_name)
-    description2 = 'received count'
-    functions.plot.plot_joint(values1=properties[description1], values2=properties[description2], description1=description1, description2=description2, folder=folder_name)
-    
-    # plot total messages sent between agents, and intrinsic message rate of agents
-    for description in list(properties):
-        functions.plot.plot_bars(properties, description=description, folder=folder_name)
-    '''
-        
+    if not (SA or minimal_outputs):
+        MAA = -1#np.argmax(rate_dynamics[0,:]) # -1 to avoid highlighting a particular agent, else give its index
+        for description in ['Message Rate','Sent Count','Received Count','Tendency','Tendency Group','Activity Group','Initial Opinion','Final Opinion']:#list(properties):
+            functions.plot.plot_dynamics(opinion_dynamics, properties, variable_name='Opinion', description=description, cmap='viridis', kinds=variant_tendency_kinds, parameters=variant_tendency_parameters, groups=tendency_groups, starti=starti_tendency, group_description='Tendency', group_cmap='crest', highlight_agent=MAA, spl=root_folder, folder=folder_name)
+           
     print(pre_root_folder,root_folder,'total time = ',datetime.now()-t0)
     
 if __name__=='__main__':
-    # define number of cores available and folders to use for each simulation
-    ncore = -1 # -1 to use all cores
-    # note that figure numbers in the paper have all moved down 1, but leaving unchanged in code for simplicity
-    pre_root_folders = ['fig4']*2+['fig5'] #['fig1']*3+['fig2']*3+['fig4']*2+['fig5']
-    root_folders = ['a','b'] + ['a']    #  ['a','b','c']*2   + ['a','b'] + ['a']  # folder to group reps inside; doubles as subplot label
+    debug = False # True to run sequentially with outputs to terminal, else run in parallel    
     
-    # set the number of reps, agents, time steps, and the homophily method for each simulation
+    # deal with potential input error for stop index due to potentially confusing python index notation for slices
+    if lim1==-1: lim1 = None # this is because the nature of slicing can be confusing with the end value; -1 excludes the last entry in list when used as a stop index
+
+    # define baseline minority group values, either used directly in results or altered in sensitivity analysis
+    base_ng = 0.05 # minority group size as fraction of all agents (will be converted to int number of agents in code)
+    base_amp = 2
+    base_dur = 500
+    base_start = 0
+    base_delay = 100
+    
+    # define which experiments to run (parameter values will be set below)
+    # todo: check what parameters were used on other laptop, as may need to redo fig2 with new sensK
+    if not SA:
+        # ordered to allow split into slow and fast simulations more easily (all consensuses first, then all radicalisations, then all polarisations)
+        pre_root_folders = ['fig1','fig2']*3   +  ['fig4']*2 +['fig5']
+        root_folders =   ['a']*2+['b']*2+['c']*2 + ['a','b']  + ['a'] # folder to group reps inside; doubles as subplot label
+        # trim and make consistent with SA
+        pre_root_folders = pre_root_folders[lim0:lim1]
+        root_folders = root_folders[lim0:lim1]
+        sens = [None]*len(root_folders)
+    else: # note that fig4b for SA is a different sensitivity analysis for fig4a, i.e. it looks at group size rather than function parameterss
+        pre_root_folders = [] # these will be populated below based on SApre_root_folders and SAroot_folders below
+        root_folders = []
+        sens = []
+        # ordered to allow split into slow and fast simulations more easily (all consensuses first, then all radicalisations, then all polarisations)
+        SApre_root_folders = ['fig1']    +   ['fig2']*2            +     ['fig1']       +      ['fig2']*2       +    ['fig1']       +    ['fig2']*2          +         ['fig4']*4 + ['fig5'] # these are the figures to have sensitivity cases applied to; the actual pre-root and root folder lists will be made longer
+        SAroot_folders = ['a_sociality']+['a_sociality','a_tendency']+['b_sociality']+['b_sociality','b_tendency'] + ['c_sociality'] + ['c_sociality','c_tendency'] + ['size','amplitude','duration','start'] + ['delay']   # note these will have indexes added as suffixes for each sensitivity case (to be defined below)
+        
+        # define sensitivity cases (don't include the base case - this will be included automatically in the postprocessing)
+        # note there are 4 case listed for each, but only out of neatness/consistency
+        # these lists must be copied exactly in postproc.py to plot the sensitivity analysis
+        # fig1/2
+        sensK = [0.01,1,6,10] # for fig1 and 2, K values to use in sensitivity analysis
+        sensT = [0.01,1.5,3,5]+[10] # for fig2, tendency values to use as +/- (note the order matters for indexing - highlighted new value from original runs with +[10])
+        # fig4
+        sens_ng = [0.01,0.1,0.25,0.5]+[0.002] # changing size of single pulse minority group (note that use of ng here is fraction, but it will be converted to integer count, which is what will bes shown in params.txt)
+        sens_amplitude = [1,4,6,10]+[0.01,0.1] # numerical value of amplitude as single sensitivity variable
+        sens_duration = [50,250,750,1000]+[1,10]
+        sens_start = [100,250,500,800]
+        sens_delay = [10,50,200,500]+[0]
+        sensG_amplitude = [] # this will contain the full pulse parameters for amplitude sensitivity
+        sensG_duration = []
+        sensG_start = []
+        sensG_single = [sensG_amplitude,sensG_duration,sensG_start] # store for pulse parameters
+        single_sens = [sens_amplitude,sens_duration,sens_start] # used as iterable to create pulse parameters
+        for i,sensh in enumerate(single_sens):
+            for val in sensh:
+                amp = val if i==0 else base_amp 
+                dur = val if i==1 else base_dur
+                start = val if i==2 else base_start
+                sensG_single[i].append([dict(start=start,duration=dur,amplitude=amp)])
+        sensG_delay = []
+        for val in sens_delay:
+            sensG_delay.append([dict(start=base_start,duration=base_dur,amplitude=base_amp),dict(start=val,duration=base_dur,amplitude=-base_amp)])
+            
+        # add sensitivity cases to pre_root_folder and root_folder lists
+        for prf,rf in zip(SApre_root_folders[lim0:lim1],SAroot_folders[lim0:lim1]):
+            if prf=='fig1': # this is to make corresponding K sensntivity results to be compared with fig2
+                sh = sensK
+            elif prf=='fig2':
+                if 'sociality' in rf:
+                    sh = sensK
+                elif 'tendency' in rf:
+                    sh = sensT
+            elif prf=='fig4':
+                if rf=='size':
+                    sh = sens_ng
+                elif rf=='amplitude':
+                    sh = sensG_amplitude
+                elif rf=='duration':
+                    sh = sensG_duration
+                elif rf=='start':
+                    sh = sensG_start
+            elif prf=='fig5':
+                sh = sensG_delay
+            nh = len(sh)
+            root_folders += [rf]*nh # i.e. repeat subfolder for each item in sensitivity analysis (suffixes will be added in the if statements to define parameters for each subplot)
+            pre_root_folders += [prf]*nh # correspondingly repeat pre root folders (which won't need a suffix)
+            sens+=sh  
+
+    # error check list lengths
     nsim = len(pre_root_folders)
-    assert(len(root_folders)==nsim)
-    nreps = [8]*nsim
-    ns = [500]*nsim # number of agents
-    nts = [1000]*nsim # number of time steps
-    homophily_methods = ['sum']*nsim # 'exp', else 'sum' to use PRL homophily method
+    assert(len(root_folders)==nsim and len(sens)==nsim)        
+    
+    # set the number of reps, agents and time steps (a simulation here is a trial, and its reps are dealt with after the trial is defined)
+    nreps = [16]*nsim # number of repetitions (2 for testing, 16 for results)
+    ns = [500]*nsim # number of agents (10 for testing, 500 for results)
+    nts = [1000]*nsim # number of time steps (20 for testing, 1000 for results)
 
     # define parameter values for each simulation
-    constant_tendenciess = [None]*nsim
-    tendency_ngss = [None]*nsim
-    variant_tendency_kindss = [None]*nsim
-    variant_tendency_parameter_changess = [None]*nsim
-    controversy_valuess = [None]*nsim
+    constant_tendenciess = [[0]]*nsim # set default as [0] as only fig2 needs anything different and will be specified then
+    tendency_ngss = [0]*nsim # set all to default value, to be overridden by particular figure/subplot/sensitivity analysis
+    variant_tendency_kindss = [[]]*nsim # this is intentionally an empty list for each sim
+    variant_tendency_parameter_changess = [[]]*nsim
+    sociality_valuess = [3]*nsim
+    controversy_valuess = [None]*nsim # set default as None to force error if not defined for specific plots
     homophily_valuess = [None]*nsim
+    
     for i,(pre_root_folder,root_folder) in enumerate(zip(pre_root_folders,root_folders)):
         # define main model parameters
-        if pre_root_folder=='fig1':
-            constant_tendenciess[i] = [0] # list as many constant tendencies as you want, and they'll be equally and randomly assigned across all agents
+        if pre_root_folder=='fig1' or pre_root_folder=='fig2':
+            if SA:
+                if sens[i]==None: continue # i.e. want to skip this but retain indexing (as achieved through .index(K) below)
+                if 'sociality' in root_folder:
+                    if pre_root_folder=='fig2': constant_tendenciess[i] = [-0.5,0.5] # need to define this here, as default is [0] for all trials
+                    K = sens[i]
+                    sociality_valuess[i] = K
+                    root_folders[i] = root_folder+str(sensK.index(K)) # adding index identifier to subfolder name (see sensK for corresponding values - could just use K here, but using index for naming consistency)
+                elif 'tendency' in root_folder:
+                    T = sens[i] # default K doesn't need redefining (c.f. constant tendencies for sensK)
+                    constant_tendenciess[i] = [-T,T]
+                    root_folders[i] = root_folder+str(sensT.index(T)) # adding index identifier to subfolder name (see sensT for corresponding values - could just use K here, but using index for naming consistency)
+            else: # note there's no need to modify root folder or sociality value, unlike for sensitivity case
+                if pre_root_folder=='fig1':
+                    constant_tendenciess[i] = [0] # list as many constant tendencies as you want, and they'll be equally and randomly assigned across all agents
+                else: # i.e. fig2, with constant tendencies
+                    constant_tendenciess[i] = [-0.5,0.5]
             tendency_ngss[i] = 0 # number of agents in each variant group for tendency (set as 0 to have no variant groups)
             variant_tendency_kindss[i] = [] # make sure to match with constant tendency values if appending both
             variant_tendency_parameter_changess[i] = []
-            if root_folder=='a':
+            if 'a'==root_folder or 'a_' in root_folder: # i.e. base case or sensitivity case for sensitivity variable
                 controversy_valuess[i] = 0.05 # alpha in paper; controversialness of topic
                 homophily_valuess[i] = 2 # beta in paper; exponent term for both homophily methods
-            elif root_folder=='b':
+            elif 'b'==root_folder or 'b_' in root_folder:
                 controversy_valuess[i] = 3 # alpha in paper; controversialness of topic
                 homophily_valuess[i] = 0 # beta in paper; exponent term for both homophily methods
-            elif root_folder=='c':
-                controversy_valuess[i] = 3 # alpha in paper; controversialness of topic
-                homophily_valuess[i] = 3 # beta in paper; exponent term for both homophily methods
-        elif pre_root_folder=='fig2':
-            constant_tendenciess[i] = [-0.5,0.5] # list as many constant tendencies as you want, and they'll be equally and randomly assigned across all agents
-            tendency_ngss[i] = 0 # number of agents in each variant group for tendency (set as 0 to have no variant groups)
-            variant_tendency_kindss[i] = [] # make sure to match with constant tendency values if appending both
-            variant_tendency_parameter_changess[i] = []
-            if root_folder=='a':
-                controversy_valuess[i] = 0.05 # alpha in paper; controversialness of topic
-                homophily_valuess[i] = 2 # beta in paper; exponent term for both homophily methods
-            elif root_folder=='b':
-                controversy_valuess[i] = 3 # alpha in paper; controversialness of topic
-                homophily_valuess[i] = 0 # beta in paper; exponent term for both homophily methods
-            elif root_folder=='c':
+            elif 'c'==root_folder or 'c_' in root_folder:
                 controversy_valuess[i] = 3 # alpha in paper; controversialness of topic
                 homophily_valuess[i] = 3 # beta in paper; exponent term for both homophily methods
         elif pre_root_folder=='fig4':
+            base_G = [dict(start=base_start,duration=base_dur,amplitude=base_amp)] # baseline pulse parameters
+            if SA:
+                if sens[i]==None: continue # i.e. want to skip this but retain indexing (as achieved through .index(ng) below)
+                variant_tendency_kindss[i] = ['pulse']
+                if root_folder=='size': # i.e. varying size of minority group
+                    ng = sens[i]
+                    root_folders[i] = root_folder+str(sens_ng.index(ng)) # adding index identifier to subfolder name (see sens_ng for corresponding values)
+                    tendency_ngss[i] = int(ng*ns[i]) # number of agents in each variant group for tendency (set as 0 to have no variant groups)
+                    G = base_G
+                else: # i.e. varying function parameters for pulse
+                    G = sens[i]
+                    if root_folder=='amplitude':
+                        sensG = sensG_amplitude
+                    elif root_folder=='duration':
+                        sensG = sensG_duration
+                    elif root_folder=='start':
+                        sensG = sensG_start
+                    root_folders[i] = root_folder+str(sensG.index(G)) # adding index identifier to subfolder name (see sens_amplitude etc for corresponding values)
+                    tendency_ngss[i] = int(base_ng*ns[i]) # number of agents in each variant group for tendency (set as 0 to have no variant groups)
+                    if tendency_ngss[i]==0:
+                        print('warning: making minority group size non-zero')
+                        tendency_ngss[i]=1 # used for testing with small numbers, should never occur in actual sensitivity analysis
+            else:
+                tendency_ngss[i] = int(base_ng*ns[i]) # number of agents in each variant group for tendency
+                if root_folder=='a':
+                    G = base_G # parameters for pulse
+                    variant_tendency_kindss[i] = ['pulse']
+                elif root_folder=='b':
+                    G = [dict(start=base_start,duration=1000,amplitude=base_amp)] # parameters for ramp
+                    variant_tendency_kindss[i] = ['ramp']
             constant_tendenciess[i] = [0] # list as many constant tendencies as you want, and they'll be equally and randomly assigned across all agents
-            tendency_ngss[i] = int(0.05*ns[i]) # number of agents in each variant group for tendency (set as 0 to have no variant groups)
             controversy_valuess[i] = 3 # alpha in paper; controversialness of topic
             homophily_valuess[i] = 3 # beta in paper; exponent term for both homophily methods
-            if root_folder=='a':
-                variant_tendency_kindss[i] = ['pulse'] # make sure to match with constant tendency values if appending both
-                variant_tendency_parameter_changess[i] = [dict(start=0,duration=500,amplitude=2)]
-            elif root_folder=='b':
-                variant_tendency_kindss[i] = ['ramp'] # make sure to match with constant tendency values if appending both
-                variant_tendency_parameter_changess[i] = [dict(start=0,duration=1000,amplitude=2)]
+            variant_tendency_parameter_changess[i] = G
         elif pre_root_folder=='fig5':
+            if SA:
+                if sens[i]==None: continue # i.e. want to skip this but retain indexing (as achieved through .index(G) below)
+                G = sens[i]
+                root_folders[i] = root_folder+str(sensG_delay.index(G)) # adding index identifier to subfolder name (see sensG_double for corresponding values)
+            else: # no need to modify root folder unlike for sensitivty case
+                G = [dict(start=base_start,duration=base_dur,amplitude=base_amp),dict(start=base_delay,duration=base_dur,amplitude=-base_amp)]
+            variant_tendency_kindss[i] = ['pulse','pulse']
+            variant_tendency_parameter_changess[i] = G
             constant_tendenciess[i] = [0] # list as many constant tendencies as you want, and they'll be equally and randomly assigned across all agents
             tendency_ngss[i] = int(0.05*ns[i]) # number of agents in each variant group for tendency (set as 0 to have no variant groups)
             controversy_valuess[i] = 3 # alpha in paper; controversialness of topic
             homophily_valuess[i] = 3 # beta in paper; exponent term for both homophily methods
-            if root_folder=='a':
-                variant_tendency_kindss[i] = ['pulse','pulse'] # make sure to match with constant tendency values if appending both
-                variant_tendency_parameter_changess[i] = [dict(start=0,duration=500,amplitude=2),dict(start=100,duration=500,amplitude=-2)]
 
     # collate parameter values for each simulation in a single list, and duplicate for each repetition
     params = []
     js = [] # this will be the flattened list indices for sims and reps
     j = -1
     for i in range(nsim):
-        for rep in range(nreps[i]):
-            j+=1; js.append(j)
-            params.append([rep,pre_root_folders[i],root_folders[i],ns[i],nts[i],homophily_methods[i],homophily_valuess[i],controversy_valuess[i],constant_tendenciess[i],tendency_ngss[i],variant_tendency_kindss[i],variant_tendency_parameter_changess[i]])
+        if not SA or sens[i]!=None:
+            for rep in range(nreps[i]):
+                j+=1; js.append(j)
+                params.append([rep,pre_root_folders[i],root_folders[i],ns[i],nts[i],sociality_valuess[i],homophily_valuess[i],controversy_valuess[i],constant_tendenciess[i],tendency_ngss[i],variant_tendency_kindss[i],variant_tendency_parameter_changess[i]])
     
     # run as many simulations/reps in parallel as ncore permits
     t0 = datetime.now()
     print('simulations started', t0)
-    Parallel(n_jobs=ncore,verbose=1)(delayed(run_model)(*params[j]) for j in js)
+    indices = js # note that setting a start and end index is made more complicated by potential for multiple sensitivity cases for each trial
+    if debug:
+        for i in indices:
+            print('****',i,'****')
+            run_model(*params[i])
+    else:
+        Parallel(n_jobs=ncore,verbose=1)(delayed(run_model)(*params[i]) for i in indices)
     t1 = datetime.now()
-    print('all simulations total time = ',t1-t0)
+    print('simulations total time = ',t1-t0)

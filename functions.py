@@ -18,7 +18,7 @@ import copy
 from scipy.interpolate import interp1d
 import os
 #from pyvis.network import Network
-import networkx as nx
+#import networkx as nx
 #from hfd import hfd
 import pandas as pd
 import matplotlib
@@ -29,13 +29,11 @@ matplotlib.rcParams.update({'font.size': 12})
 class file():
     def make_folder(*names):  # names is a folder name with optional subfolder names, which this function makes and returns the path of
         path = os.path.join(*names)
-        try:
-            os.makedirs(path)
-        except:
-            pass # folder already exists (so just overwrite files in it)
+        path = file.underscore(path)
+        if not os.path.isdir(path): os.makedirs(path) # n.b. if folder doesn't exist, new results will just be added to/replace existing ones
         return path
     def underscore(s):
-        return s.replace(' ','_').replace('|','') # i.e. replace spaces with underscores and remove any | characters
+        return s.replace(' ','_').replace('|','').replace('$','').replace('_=_','=') # i.e. replace spaces with underscores and remove any | characters, and $ too for ease of reading
     def write_parameters(params, param_names, folder=''): # write parameters to a human-readable text file, summarising large lists as sets
         with open(os.path.join(folder,'params.txt'),'w') as f:
             for param,param_name in zip(params,param_names):
@@ -90,19 +88,11 @@ class dynamics():
     def self_shift(i,t,opinions,tendency_kinds,tendency_parameters,groups,time_step): # i moves opinion to towards tendency
         tendency = time.time_dependent_function(t,kind=tendency_kinds[groups[i]],parameters=tendency_parameters[groups[i]])
         return time_step*(tendency-opinions[i])
-    def damping_function(dif, damping_root): # deprecated way to avoid opinion shifts when agents already agree, but produces non-monotonic behaviour (set damping root to 0 or None to avoid this)
-        if damping_root:
-            damping_factor = dif**(1/damping_root)
-        else:
-            damping_factor = 1
-        return damping_factor
-    def social_shift(i,j,opinions,socialities,controversies,damping_root,time_step): # obtain single term in social summation, scaled by time step (could do this once all terms have been obtained, but neater this way)
-        damping_factor = dynamics.damping_function(abs(opinions[i]-opinions[j]),damping_root)
-        return time_step*socialities[i]*np.tanh(controversies[i]*opinions[j])*damping_factor
-    def social_shift_piecewise(i,j,opinions,socialities,controversies,damping_root,time_step): # function used to test out other forms of damping, but approach is something of a dead end
-        damping_factor = dynamics.damping_function(abs(opinions[i]-opinions[j]),damping_root)
+    def social_shift(i,j,opinions,socialities,controversies,time_step): # obtain single term in social summation, scaled by time step (could do this once all terms have been obtained, but neater this way)
+        return time_step*socialities[i]*np.tanh(controversies[i]*opinions[j])
+    def social_shift_piecewise(i,j,opinions,socialities,controversies,time_step): # function used to test out other forms of damping, but approach is something of a dead end
         if (opinions[i]>0 and opinions[j]>opinions[i]) or (opinions[i]<0 and opinions[j]<opinions[i]):
-            shift = damping_factor*np.tanh(controversies[i]*opinions[j])
+            shift = np.tanh(controversies[i]*opinions[j])
         else:
             shift = np.tanh(controversies[i]*(opinions[j]-opinions[i])) # need to test out a curve which is closer to the above but doesn't cause confusing shifts
         return time_step*socialities[i]*shift
