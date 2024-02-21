@@ -372,19 +372,19 @@ class plot():
         if spl: ax = plot.add_subplot_label(ax,spl)
         label = description
         if log: label = 'log('+description+')'
-        plt.colorbar(mappable=mapper, label=label)
+        plt.colorbar(mappable=mapper, label=label, ax=ax)
         title = variable_name
         if autocorr:
             title = title+'_autocorrelation'
         else:
             title = title+'_dynamics'
-        plt.savefig(os.path.join(folder,title+'_coloured_by_'+file.underscore(description)+tag+'.png'), dpi=200, bbox_inches='tight') # tag optionally used to distinguish replot
+        plt.savefig(os.path.join(folder,title+'_coloured_by_'+file.underscore(description)+tag+'.pdf'), dpi=200, bbox_inches='tight') # tag optionally used to distinguish replot
         plt.close()
         return
     def plot_distribution(values,description='',folder=''):
         sns.histplot(x=values[description])
         plt.xlabel(description)
-        plt.savefig(os.path.join(folder,'histogram_'+file.underscore(description)+'.png'), dpi=200, bbox_inches='tight')
+        plt.savefig(os.path.join(folder,'histogram_'+file.underscore(description)+'.pdf'), dpi=200, bbox_inches='tight')
         plt.close()
         return
     def make_colourbar(values,description='',cmap='viridis',nticks=5,dp=2,filename=''):
@@ -436,7 +436,7 @@ class plot():
         tempname='temp.html'
         gp.show(tempname)
         # make standalone colourbar as image file
-        cfilename = os.path.join(folder, 'network_colourbar'+file.underscore(description)+'.png')
+        cfilename = os.path.join(folder, 'network_colourbar'+file.underscore(description)+'.pdf')
         title = description
         if dp==0: title+='(log scale)'
         plot.make_colourbar(values,description=title,cmap=cmap,nticks=nticks,dp=dp,filename=cfilename)
@@ -452,7 +452,7 @@ class plot():
     def plot_joint(values1, values2, description1='', description2='', folder=''):
         ax = sns.jointplot(x=values1, y=values2, kind='kde', fill=True) # jointplot doesn't seem to work with a dataframe, so use x and y directly
         ax.set_axis_labels(description1, description2)
-        plt.savefig(os.path.join(folder,'jointplot_'+file.underscore(description1)+'_'+file.underscore(description2)+'.png'), dpi=200, bbox_inches='tight')
+        plt.savefig(os.path.join(folder,'jointplot_'+file.underscore(description1)+'_'+file.underscore(description2)+'.pdf'), dpi=200, bbox_inches='tight')
         plt.close()
         return
     def plot_heatmap(matrix, description='', xlabel='', ylabel='', cmap='viridis', folder=''):
@@ -461,7 +461,7 @@ class plot():
         plt.title(description)
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
-        plt.savefig(os.path.join(folder,'heatmap_'+file.underscore(description)+'.png'), dpi=200, bbox_inches='tight')
+        plt.savefig(os.path.join(folder,'heatmap_'+file.underscore(description)+'.pdf'), dpi=200, bbox_inches='tight')
         plt.close()
         return
     def plot_bars(properties, description='', folder=''):
@@ -472,7 +472,7 @@ class plot():
         ax.bar(xs,values,color=colours)
         plt.xlabel('agent id')
         plt.ylabel(description)
-        plt.savefig(os.path.join(folder,'bars_'+file.underscore(description)+'.png'), dpi=200, bbox_inches='tight')
+        plt.savefig(os.path.join(folder,'bars_'+file.underscore(description)+'.pdf'), dpi=200, bbox_inches='tight')
         plt.close()
         return
     def plot_timeseries(tss, types, description, title, labels, xlabel='time', folder=''):
@@ -489,7 +489,7 @@ class plot():
         plt.ylabel(description)
         plt.title(title)
         plt.legend(bbox_to_anchor=(1,1),loc='upper left')
-        plt.savefig(os.path.join(folder,'timeseries_'+file.underscore(description)+'.png'), dpi=200, bbox_inches='tight')
+        plt.savefig(os.path.join(folder,'timeseries_'+file.underscore(description)+'.pdf'), dpi=200, bbox_inches='tight')
         plt.close()
         return
                
@@ -522,7 +522,7 @@ if __name__=='__main__':
         plt.xlabel('message rate')
         plt.ylabel('probability density')
         #plt.show()
-        #plt.savefig('activity_distribution.png', dpi=200, bbox_inches='tight')
+        #plt.savefig('activity_distribution.pdf', dpi=200, bbox_inches='tight')
     if pp: # test dyad and triad permutations
         def test_perm(n): # number of permutations of dyads and triads with n agents (used to find suitable tension balance for hamiltonian)
             # this demonstrates that:
